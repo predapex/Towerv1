@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Dan Tower + Gallows Model</title>
+<style>
+:root{
+  --bg:#eef2f6; --panel:#ffffff; --text:#18202a; --muted:#5f6b78; --line:#c8d0d9;
+  --tower:#4f6f8f; --gallows:#b78a4f; --roof:#6b7785; --rope:#7d5c35; --wire:#7a7f86;
+  --ok:#2f855a; --warn:#c58a00; --bad:#c43d3d; --accent:#315d87;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:var(--text)}
+.wrap{max-width:1100px;margin:auto;padding:14px}
+h1{font-size:21px;margin:0 0 10px}
+.grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(280px,.8fr);gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px}
+.canvasbox{height:500px;border:1px solid var(--line);border-radius:10px;background:#dbe4ec;overflow:hidden;position:relative;touch-action:none}
+canvas{display:block;width:100%;height:100%}
+.row{display:flex;justify-content:space-between;gap:10px;align-items:center}
+.small{font-size:12px;color:var(--muted)}
+label{font-size:14px;font-weight:600}
+input[type=range]{width:100%;margin:6px 0 12px}
+.stat{display:grid;grid-template-columns:1fr auto;gap:6px 12px;font-size:14px;padding:5px 0;border-bottom:1px solid #edf0f2}
+.stat:last-child{border-bottom:0}
+.value{font-weight:700}
+.red{color:var(--bad)}
+.orange{color:var(--warn)}
+.green{color:var(--ok)}
+.badge{font-size:11px;padding:2px 7px;border-radius:999px;background:#eef2f5;color:#4a5560}
+button{font:inherit;padding:8px 11px;border-radius:9px;border:1px solid var(--line);background:#fff;color:var(--text)}
+.sectiontitle{font-weight:700;margin-bottom:8px}
+.legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted)}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:-1px}
+.note{font-size:12px;color:var(--muted);line-height:1.4;margin-top:8px}
+@media(max-width:800px){
+  .grid{grid-template-columns:1fr}
+  .canvasbox{height:430px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Dan Tower + Gallows Load Model</h1>
+  <div class="grid">
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="sectiontitle">Interactive 3D model</div>
+          <div class="small">Drag to rotate. Pinch or use +/- to zoom.</div>
+        </div>
+        <div><button id="minus">−</button> <button id="plus">+</button> <button id="reset">Reset</button></div>
+      </div>
+      <div class="canvasbox" id="box"><canvas id="cv"></canvas></div>
+      <div class="legend">
+        <span><i class="dot" style="background:var(--tower)"></i>Tower</span>
+        <span><i class="dot" style="background:var(--gallows)"></i>Gallows</span>
+        <span><i class="dot" style="background:var(--bad)"></i>High-demand points</span>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <div class="sectiontitle">Load controls</div>
+        <label>Climber weight: <span id="wOut">160</span> lb</label>
+        <input id="w" type="range" min="80" max="300" value="160" step="5">
+        <label>Dynamic multiplier: <span id="dOut">2.0</span>×</label>
+        <input id="d" type="range" min="1" max="4" value="2" step=".1">
+        <label>Side / swing load: <span id="sOut">15</span>%</label>
+        <input id="s" type="range" min="0" max="50" value="15" step="5">
+        <label>Cable pretension: <span id="pOut">500</span> lb</label>
+        <input id="p" type="range" min="0" max="1200" value="500" step="25">
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <div class="sectiontitle">Current calculated demand</div>
+        <div id="stats"></div>
+        <div class="note">Orange = 80–100% of screening value. Red = above screening value. <strong>The red rope joint at the end of the gallows is different: it is always shown red to identify the primary load-application / high-demand point. Its red color does NOT mean that connection has exceeded an estimated capacity.</strong> These are preliminary engineering screens, not certified capacities.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <div class="sectiontitle">Attachment / member assumptions</div>
+    <div class="small">
+      Bottom brace → 3×3×3/16 in angle tower leg · Top beam → 2×2×3/16 in angle handrail · Upper cable → 2×2×3/16 in roof frame · Gallows → 2×2×1/4 in angle · Bolts → 1/2 in high-tensile · Cable → 1/4 in 7×19 stainless, 500 lb default pretension · Rope reach → 99.5 in · Lower brace → ~12 ft · Brace angle → 46.4°
+    </div>
+    <div class="note">Screening values depend heavily on actual unsupported span, connection geometry, bolt grade/layout, welds, eccentricity, corrosion and anchorage. A structural engineer should replace these estimates with measured capacities before anyone climbs on it.</div>
+  </div>
+</div>
+
+<script>
+(function(){
+const cv=document.getElementById('cv'), ctx=cv.getContext('2d'), box=document.getElementById('box');
+const w=document.getElementById('w'), d=document.getElementById('d'), s=document.getElementById('s'), p=document.getElementById('p');
+let yaw=-0.55,pitch=0.32,zoom=15.5,drag=false,lastX=0,lastY=0,lastDist=0;
+
+function resize(){
+  const r=box.getBoundingClientRect(), ratio=Math.min(window.devicePixelRatio||1,2);
+  cv.width=Math.max(1,Math.round(r.width*ratio)); cv.height=Math.max(1,Math.round(r.height*ratio));
+  ctx.setTransform(ratio,0,0,ratio,0,0); draw();
+}
+window.addEventListener('resize',resize);
+
+function rot(P){
+  let [x,y,z]=P;
+  let cy=Math.cos(yaw), sy=Math.sin(yaw), cp=Math.cos(pitch), sp=Math.sin(pitch);
+  let x1=x*cy-y*sy, y1=x*sy+y*cy;
+  let y2=y1*cp-z*sp, z2=y1*sp+z*cp;
+  return [x1,y2,z2];
+}
+function proj(P){
+  let [x,y,z]=rot(P), cx=box.clientWidth/2, cy=box.clientHeight*0.73;
+  let scale=zoom*(1+z/130);
+  return [cx+x*scale, cy-y*scale];
+}
+function line(a,b,color,width=2,dash=[]){
+  const A=proj(a),B=proj(b);
+  ctx.beginPath();ctx.moveTo(...A);ctx.lineTo(...B);
+  ctx.strokeStyle=color;ctx.lineWidth=width;ctx.setLineDash(dash);ctx.stroke();ctx.setLineDash([]);
+}
+function poly(points,fill,stroke,width=1){
+  const pts=points.map(proj);ctx.beginPath();ctx.moveTo(...pts[0]);for(let i=1;i<pts.length;i++)ctx.lineTo(...pts[i]);ctx.closePath();
+  if(fill){ctx.fillStyle=fill;ctx.fill()} if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=width;ctx.stroke()}
+}
+function circle(P,r,color,label){
+  const q=proj(P);ctx.beginPath();ctx.arc(q[0],q[1],r,0,Math.PI*2);ctx.fillStyle=color;ctx.fill();
+  if(label){ctx.font='11px -apple-system,Arial';ctx.fillStyle='#17202a';ctx.fillText(label,q[0]+7,q[1]-7)}
+}
+function arrow(a,b,color,width=3){
+  const A=proj(a),B=proj(b);ctx.beginPath();ctx.moveTo(...A);ctx.lineTo(...B);ctx.strokeStyle=color;ctx.lineWidth=width;ctx.stroke();
+  const ang=Math.atan2(B[1]-A[1],B[0]-A[0]),len=9;
+  ctx.beginPath();ctx.moveTo(B[0],B[1]);ctx.lineTo(B[0]-len*Math.cos(ang-.45),B[1]-len*Math.sin(ang-.45));ctx.lineTo(B[0]-len*Math.cos(ang+.45),B[1]-len*Math.sin(ang+.45));ctx.closePath();ctx.fillStyle=color;ctx.fill();
+}
+
+const zTop=26, base=15, top=10, reach=99.5/12, beamZ=30, face=-5, tip=face-reach, lowerZ=beamZ-104.5/12, wireZ=34;
+function interp(s,z){return base+(top-base)*(z/zTop)}
+function draw(){
+  ctx.clearRect(0,0,box.clientWidth,box.clientHeight);
+  ctx.fillStyle='#dbe4ec';ctx.fillRect(0,0,box.clientWidth,box.clientHeight);
+  // ground
+  poly([[-12,-12,0],[12,-12,0],[12,12,0],[-12,12,0]],'#c9d3dc','#b5c0c9',1);
+
+  // legs
+  const corners=[[-1,-1],[-1,1],[1,-1],[1,1]];
+  for(const [sx,sy] of corners) line([sx*base/2,sy*base/2,0],[sx*top/2,sy*top/2,zTop],'#4f6f8f',4);
+  for(const z of [7,14,21]){
+    const ww=interp(0,z), h=ww/2;
+    const pts=[[-h,-h,z],[h,-h,z],[h,h,z],[-h,h,z]];
+    for(let i=0;i<4;i++) line(pts[i],pts[(i+1)%4],'#4f6f8f',2.3);
+  }
+  // cross braces
+  line([-base/2,-base/2,0],[top/2,-top/2,zTop],'#4f6f8f',2);
+  line([base/2,-base/2,0],[-top/2,-top/2,zTop],'#4f6f8f',2);
+  line([-base/2,base/2,0],[top/2,top/2,zTop],'#4f6f8f',2);
+  line([base/2,base/2,0],[-top/2,top/2,zTop],'#4f6f8f',2);
+
+  // platform & roof
+  poly([[-5,-5,26],[5,-5,26],[5,5,26],[-5,5,26]],'#6b7785','#4b5663',1.5);
+  poly([[-5.5,-3,33],[5.5,-3,33],[5.5,4.5,33],[-5.5,4.5,33]],'#7f8b97','#4b5663',1.5);
+  for(const [x,y] of [[-4,-2.5],[4,-2.5],[-4,4],[4,4]]) line([x,y,26],[x,y,33],'#4f6f8f',2);
+
+  // handrail
+  line([-5,-4.5,26],[-5,-4.5,30],'#4f6f8f',2);
+  line([-5,4.5,26],[-5,4.5,30],'#4f6f8f',2);
+  line([-5,-4.5,30],[-5,4.5,30],'#4f6f8f',2);
+
+  // Gallows, cable, rope
+  line([face+4,0,beamZ],[tip,0,beamZ],'#b78a4f',5);
+  line([face,0,lowerZ],[tip,0,beamZ],'#b78a4f',5);
+  line([face,0,wireZ],[tip,0,beamZ],'#7a7f86',2,[5,4]);
+  line([tip,0,beamZ],[tip,0,3],'#7d5c35',3);
+
+  // stairs schematic
+  line([5.3,5,2],[5.3,-4,25],'#4f6f8f',2); line([7.4,5,2],[7.4,-4,25],'#4f6f8f',2);
+  for(let i=0;i<13;i++){let t=i/12;let z=3+22*t;let y=4.5-8*t;line([5.3,y,z],[7.4,y,z],'#4f6f8f',1.5)}
+
+  const vals=calc();
+  // load arrows
+  const downLen=Math.min(5,1.2+vals.P/200), sideLen=Math.min(4,0.7+vals.H/120);
+  arrow([tip,0,beamZ],[tip,0,beamZ-downLen],'#c43d3d',3);
+  arrow([tip,0,beamZ],[tip,sideLen,beamZ],'#c58a00',3);
+
+  // critical points
+  circle([tip,0,beamZ],5,'#c43d3d','rope joint');
+  circle([face,0,beamZ],5,statusColor(vals.topDemand,343),'top/handrail');
+  circle([face,0,lowerZ],5,statusColor(vals.braceDemand,794),'lower/tower leg');
+  circle([face,0,wireZ],5,statusColor(vals.cableDemand,980),'roof cable joint');
+
+  // labels
+  ctx.fillStyle='#26313c';ctx.font='12px -apple-system,Arial';
+  ctx.fillText('26 ft tower',14,20);
+}
+
+function calc(){
+  const W=+w.value,D=+d.value,S=+s.value/100,P0=+p.value;
+  const P=W*D,H=P*S,R=Math.hypot(P,H),theta=46.4*Math.PI/180;
+  const brace=P/Math.sin(theta), beam=P/Math.tan(theta), torsion=H*reach, cant=P*reach;
+  // Simplified cable load share: cable geometry ratio + pretension. Not rigorous stiffness compatibility.
+  const cableAngle=Math.atan2(4,reach);
+  const addedCable=Math.max(0,P*0.35/Math.sin(cableAngle));
+  const cable=P0+addedCable;
+  return {
+    W,D,S,P,H,R,brace,beam,torsion,cant,cable,
+    topDemand:Math.hypot(P,beam)*0.55,
+    braceDemand:brace,
+    cableDemand:cable
+  };
+}
+function statusColor(v,limit){return v>limit?'#c43d3d':v>=.8*limit?'#c58a00':'#2f855a'}
+function cls(v,limit){return v>limit?'red':v>=.8*limit?'orange':'green'}
+function fmt(n){return Math.round(n).toLocaleString()}
+function update(){
+  document.getElementById('wOut').textContent=w.value;
+  document.getElementById('dOut').textContent=(+d.value).toFixed(1);
+  document.getElementById('sOut').textContent=s.value;
+  document.getElementById('pOut').textContent=p.value;
+  const v=calc();
+  const rows=[
+    ['Vertical design load',v.P,'lb',null],
+    ['Side load',v.H,'lb',null],
+    ['Resultant rope load',v.R,'lb',null],
+    ['Lower brace axial force',v.brace,'lb',940],
+    ['Lower 3×3×3/16 tower-leg screen',v.brace,'lb',794],
+    ['Top 2×2×3/16 handrail demand',v.topDemand,'lb',343],
+    ['Upper cable tension',v.cable,'lb',980],
+    ['Out-of-plane torsion',v.torsion,'ft-lb',null],
+    ['Brace-loss cantilever moment',v.cant,'ft-lb',null],
+  ];
+  document.getElementById('stats').innerHTML=rows.map(([name,val,unit,lim])=>{
+    const c=lim?cls(val,lim):'';
+    const tag=lim?` <span class="badge">screen ${fmt(lim)} ${unit}</span>`:'';
+    return `<div class="stat"><div>${name}${tag}</div><div class="value ${c}">${fmt(val)} ${unit}</div></div>`;
+  }).join('');
+  draw();
+}
+[w,d,s,p].forEach(el=>el.addEventListener('input',update));
+
+document.getElementById('reset').onclick=()=>{yaw=-.55;pitch=.32;zoom=15.5;draw()};
+document.getElementById('plus').onclick=()=>{zoom=Math.min(28,zoom+1.5);draw()};
+document.getElementById('minus').onclick=()=>{zoom=Math.max(8,zoom-1.5);draw()};
+
+cv.addEventListener('pointerdown',e=>{drag=true;lastX=e.clientX;lastY=e.clientY;cv.setPointerCapture(e.pointerId)});
+cv.addEventListener('pointermove',e=>{if(!drag)return;yaw-=(e.clientX-lastX)*.008;pitch=Math.max(-.6,Math.min(1.1,pitch+(e.clientY-lastY)*.007));lastX=e.clientX;lastY=e.clientY;draw()});
+cv.addEventListener('pointerup',()=>drag=false);
+cv.addEventListener('pointercancel',()=>drag=false);
+
+cv.addEventListener('touchstart',e=>{if(e.touches.length===2){lastDist=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY)}},{passive:true});
+cv.addEventListener('touchmove',e=>{if(e.touches.length===2){const nd=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY); if(lastDist){zoom=Math.max(8,Math.min(28,zoom+(nd-lastDist)*.03));draw()} lastDist=nd}},{passive:true});
+
+resize();update();
+})();
+</script>
+</body>
+</html>
